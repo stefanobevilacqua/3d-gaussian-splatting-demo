@@ -1,56 +1,16 @@
-type Vec3 = [number, number, number]
+import {vec3, mat3, mat4} from "gl-matrix"
+
 type Model = {
-    vertices: Vec3[],
-    faces: Vec3[],
-    normals: Vec3[]
+    vertices: vec3[],
+    faces: vec3[],
+    normals: vec3[]
 }
-type Mat3 = [Vec3, Vec3, Vec3]
 type GaussianSplat = {
-    position: Vec3,
-    rotation: Mat3,
-    scale: Vec3,
-    color: Vec3,
+    position: vec3,
+    rotation: mat3,
+    scale: vec3,
+    color: vec3,
     opacity: number,
-}
-
-function vec3_add(a: Vec3, b: Vec3): Vec3 {
-    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-function vec3_sub(a: Vec3, b: Vec3): Vec3 {
-    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-function vec3_cross(a: Vec3, b: Vec3): Vec3 {
-    return [
-	a[1]*b[2] - a[2]*b[1],
-	a[2]*b[0] - a[0]*b[2],
-	a[0]*b[1] - a[1]*b[0],
-    ]
-}
-
-function vec3_dot(a: Vec3, b: Vec3): number {
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
-}
-
-function vec3_module(v: Vec3): number {
-    return Math.sqrt(vec3_dot(v, v))
-}
-
-function vec3_normalize(v: Vec3): Vec3 {
-    return vec3_scale(v, 1.0 / vec3_module(v))
-}
-
-function vec3_scale(v: Vec3, k: number): Vec3 {
-    return [v[0]*k, v[1]*k, v[2]*k]
-}
-
-function mat3_mult_vec3(m: Mat3, v: Vec3) {
-    let r: Vec3 = [0, 0, 0]
-    for(let i =0; i < 3; i++) {
-	r = vec3_add(r, vec3_scale(m[i]!, v[i]!))
-    }
-    return r;
 }
 
 async function getBunnyModel(): Promise<Model> {
@@ -58,56 +18,72 @@ async function getBunnyModel(): Promise<Model> {
     let model: Model = {vertices: [], faces: [], normals: []}
     text.split(/\r\n|\n|\r/).forEach(line => {
 	if(line.startsWith("v")) {
-	    model.vertices.push(line.split(/\s+/).slice(1).map(x => parseFloat(x)) as Vec3)
+	    model.vertices.push(line.split(/\s+/).slice(1).map(x => parseFloat(x)) as vec3)
 	}
 	if(line.startsWith("f")) {
-	    let face = line.split(/\s+/).slice(1).map(x => parseInt(x) - 1) as Vec3 
+	    let face = line.split(/\s+/).slice(1).map(x => parseInt(x) - 1) as vec3
 	    model.faces.push(face)
 	    let triangle = [
 		model.vertices[face[0]],
 		model.vertices[face[1]],
 		model.vertices[face[2]],
 	    ]
-	    model.normals.push(vec3_cross(vec3_sub(triangle[1]!, triangle[0]!),
-					  vec3_sub(triangle[2]!, triangle[0]!)))
+	    let edge_1_0 = vec3.create()
+	    let edge_2_0 = vec3.create()
+	    let normal = vec3.create()
+	    vec3.sub(edge_1_0, triangle[1]!, triangle[0]!)
+	    vec3.sub(edge_2_0, triangle[2]!, triangle[0]!)
+	    vec3.cross(normal, edge_1_0, edge_2_0)
+	    model.normals.push(normal)
 	}
     })
     return model
 }
 
+function randomIndexWithProbability(weights: number[]) {
+    let total = weights.reduce((sum, w) => sum + w);
+    let n = Math.random()*total;
+    let sum = 0.0;
+    for(const [i, w] of weights.entries()) {
+	sum += w	
+	if(n < sum) return i
+    }
+    return -1
+}
+
 function generateGaussianSplats(model: Model, numSplats: number): GaussianSplat[] {
-    let areas: number[] = model.normals.map((normal: Vec3) => {
-	return vec3_module(normal) // No need to multiply by 0.5 here
+    let areas: number[] = model.normals.map((normal: vec3) => {
+	return vec3.length(normal) // No need to multiply by 0.5 here
     })
-    let totalArea = areas.reduce((total, area) => { return total + area })
-    let numSplatsPerFace = areas.map(area => Math.round(area * numSplats / totalArea))
     let splats: GaussianSplat[] = []
-    for(let i = 0; i < model.faces.length; i++) {
-	let face = model.faces[i]!
-	let triangle = [
+    for(let i = 0; i < numSplats; i++) {
+	// TODO (IMPROVEMENT): total area is calculated within randomIndexWithProbability for each splat (can be calculated once)
+	const index = randomIndexWithProbability(areas)
+	const face = model.faces[index]!
+	const triangle = [
 	    model.vertices[face[0]],
 	    model.vertices[face[1]],
 	    model.vertices[face[2]],
 	]
-	for(let j = 0; j < numSplatsPerFace[i]!; j++) {
-	    let u = Math.random()
-	    let v = Math.random()
-	    if(u + v > 1) {
-		u = 1 - u
-		v = 1 - v
-	    }
-	    let position = vec3_scale(triangle[0]!, 1-u-v)
-	    position = vec3_add(position, vec3_scale(triangle[1]!, u))
-	    position = vec3_add(position, vec3_scale(triangle[2]!, v))
-	    splats.push({
-		position: position,
-		// TODO: get real rotation matrix from normal
-		rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-		scale: [0.01, 0.01, 0.01],
-		color: [0.9, 0.9, 0.9],
-		opacity: 0.01
-	    })
+	let u = Math.random()
+	let v = Math.random()
+	if(u + v > 1) {
+	    u = 1 - u
+	    v = 1 - v
 	}
+	let position = vec3.scale(vec3.create(), triangle[0]!, 1-u-v)
+	vec3.add(position, position, vec3.scale(vec3.create(), triangle[1]!, u))
+	vec3.add(position, position, vec3.scale(vec3.create(), triangle[2]!, v))
+	let normal = model.normals[index]!
+	// let up = vec3.dot(normal, [0, 1, 0]) > 0 ? [0, 1, 0] : [0, -1, 0]
+	let up = [0, 1, 0]
+	splats.push({
+	    position: position,
+	    rotation: mat3.fromMat4(mat3.create(), mat4.lookAt(mat4.create(), position, normal, up)),
+	    scale: [0.01, 0.01, 0.01],
+	    color: [0.9, 0.9, 0.9],
+	    opacity: 0.01
+	})	
     }
     return splats
 }
@@ -120,40 +96,43 @@ type RenderContext = {
     pipeline: GPURenderPipeline,
     bindGroup: GPUBindGroup,
     numOfSplats: number,
+    mvpArray: Float32Array,
+    mvpBuffer: GPUBuffer,
     dt: number,
+    et: number,
 }
 
 function uploadSplatsToGPU(device: GPUDevice, splats: GaussianSplat[]): GPUBuffer {
-    const cpuBuffer: number[] = []
+    const array: number[] = []
     splats.forEach(splat => {
-	cpuBuffer.push(splat.position[0])
-	cpuBuffer.push(splat.position[1])
-	cpuBuffer.push(splat.position[2])
-	cpuBuffer.push(0.0)	// Padding
-	cpuBuffer.push(splat.rotation[0][0])
-	cpuBuffer.push(splat.rotation[0][1])
-	cpuBuffer.push(splat.rotation[0][2])
-	cpuBuffer.push(0.0)
-	cpuBuffer.push(splat.rotation[1][0])
-	cpuBuffer.push(splat.rotation[1][1])
-	cpuBuffer.push(splat.rotation[1][2])
-	cpuBuffer.push(0.0)
-	cpuBuffer.push(splat.rotation[2][0])
-	cpuBuffer.push(splat.rotation[2][1])
-	cpuBuffer.push(splat.rotation[2][2])
-	cpuBuffer.push(0.0)
-	cpuBuffer.push(splat.scale[0])
-	cpuBuffer.push(splat.scale[1])
-	cpuBuffer.push(splat.scale[2])
-	cpuBuffer.push(0.0)
-	cpuBuffer.push(splat.color[0])
-	cpuBuffer.push(splat.color[1])
-	cpuBuffer.push(splat.color[2])
-	cpuBuffer.push(splat.opacity)
+	array.push(splat.position[0])
+	array.push(splat.position[1])
+	array.push(splat.position[2])
+	array.push(0.0)	// Padding
+	array.push(splat.rotation[0 * 3 + 0]!)
+	array.push(splat.rotation[0 * 3 + 1]!)
+	array.push(splat.rotation[0 * 3 + 2]!)
+	array.push(0.0)
+	array.push(splat.rotation[1 * 3 + 0]!)
+	array.push(splat.rotation[1 * 3 + 1]!)
+	array.push(splat.rotation[1 * 3 + 2]!)
+	array.push(0.0)
+	array.push(splat.rotation[2 * 3 + 0]!)
+	array.push(splat.rotation[2 * 3 + 1]!)
+	array.push(splat.rotation[2 * 3 + 2]!)
+	array.push(0.0)
+	array.push(splat.scale[0])
+	array.push(splat.scale[1])
+	array.push(splat.scale[2])
+	array.push(0.0)
+	array.push(splat.color[0])
+	array.push(splat.color[1])
+	array.push(splat.color[2])
+	array.push(splat.opacity)
     })
-    const cpuBufferView = new Float32Array(cpuBuffer)
+    const cpuBufferView = new Float32Array(array)
     const buffer = device.createBuffer({
-	size: cpuBufferView.length * 4,
+	size: cpuBufferView.byteLength,
 	usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     })
     device.queue.writeBuffer(buffer, 0, cpuBufferView.buffer)
@@ -163,6 +142,17 @@ function uploadSplatsToGPU(device: GPUDevice, splats: GaussianSplat[]): GPUBuffe
 function onFrame(ctx: RenderContext) {
     ctx.canvas.width = ctx.canvas.clientWidth
     ctx.canvas.height = ctx.canvas.clientHeight
+
+    let aspectRatio = ctx.canvas.clientWidth/ctx.canvas.clientHeight
+    let view = mat4.create()
+    let eyeAngle = ctx.et * 0.001;
+    mat4.lookAt(view, [0.3 * Math.sin(eyeAngle), 0.15, 0.3 * Math.cos(eyeAngle)], [0, 0.1, 0], [0, 1, 0])
+    let proj = mat4.create()
+    mat4.perspectiveZO(proj, Math.PI/3.0, aspectRatio, 0.01, 100.0)
+    let mvp = mat4.create()
+    mat4.multiply(mvp, proj, view)
+    ctx.mvpArray.set(mvp)
+    ctx.device.queue.writeBuffer(ctx.mvpBuffer, 0, ctx.mvpArray.buffer)    
     
     let cmd = ctx.device.createCommandEncoder()
     let pass = cmd.beginRenderPass({
@@ -178,7 +168,7 @@ function onFrame(ctx: RenderContext) {
     pass.draw(4, ctx.numOfSplats)
     pass.end()
     ctx.device.queue.submit([cmd.finish()])
-    requestAnimationFrame((dt: number) => onFrame({...ctx, dt: dt}))
+    requestAnimationFrame((et: number) => onFrame({...ctx, et: et, dt: et - ctx.et}))
 }
 
 async function onLoad() {
@@ -198,6 +188,7 @@ async function onLoad() {
 
     const model = await getBunnyModel()
     const splats = generateGaussianSplats(model, 100000)
+    // const splats = generateGaussianSplats(model, 100)
     
     // tmp
     window.model = model
@@ -233,15 +224,24 @@ async function onLoad() {
 	}
     })
 
+    let mvpArray = new Float32Array(16)
+    let mvpBuffer = device.createBuffer({
+	size: mvpArray.byteLength,
+	usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+    })
+
     const bindGroup = device.createBindGroup({
 	layout: pipeline.getBindGroupLayout(0),
 	entries: [{
 	    binding: 0,
 	    resource: splatsBuffer,
+	}, {
+	    binding: 1,
+	    resource: mvpBuffer,
 	}]
     })
 
-    requestAnimationFrame((dt: number) => onFrame({
+    requestAnimationFrame((et: number) => onFrame({
 	canvas: canvas,
 	context: ctx,
 	device: device,
@@ -249,7 +249,10 @@ async function onLoad() {
 	pipeline: pipeline,
 	bindGroup: bindGroup,
 	numOfSplats: splats.length,
-	dt: dt
+	mvpArray: mvpArray,
+	mvpBuffer: mvpBuffer,
+	et: et,
+	dt: et
     }))
 }
 
