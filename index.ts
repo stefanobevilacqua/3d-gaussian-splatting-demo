@@ -5,7 +5,7 @@ type Model = {
     faces: vec3[],
     normals: vec3[]
 }
-type GaussianSplat = {
+type Gaussian = {
     position: vec3,
     rotation: mat3,
     scale: vec3,
@@ -28,13 +28,10 @@ async function getBunnyModel(): Promise<Model> {
 		model.vertices[face[1]],
 		model.vertices[face[2]],
 	    ]
-	    let edge_1_0 = vec3.create()
-	    let edge_2_0 = vec3.create()
-	    let normal = vec3.create()
-	    vec3.sub(edge_1_0, triangle[1]!, triangle[0]!)
-	    vec3.sub(edge_2_0, triangle[2]!, triangle[0]!)
-	    vec3.cross(normal, edge_1_0, edge_2_0)
-	    model.normals.push(normal)
+	    let normal = vec3.cross(vec3.create(),
+				    vec3.sub(vec3.create(), triangle[1]!, triangle[0]!),
+				    vec3.sub(vec3.create(), triangle[2]!, triangle[0]!))
+	    model.normals.push(vec3.normalize(normal, normal))
 	}
     })
     return model
@@ -51,13 +48,13 @@ function randomIndexWithProbability(weights: number[]) {
     return -1
 }
 
-function generateGaussianSplats(model: Model, numSplats: number): GaussianSplat[] {
+function generateGaussians(model: Model, numGaussians: number): Gaussian[] {
     let areas: number[] = model.normals.map((normal: vec3) => {
 	return vec3.length(normal) // No need to multiply by 0.5 here
     })
-    let splats: GaussianSplat[] = []
-    for(let i = 0; i < numSplats; i++) {
-	// TODO (IMPROVEMENT): total area is calculated within randomIndexWithProbability for each splat (can be calculated once)
+    let gaussians: Gaussian[] = []
+    for(let i = 0; i < numGaussians; i++) {
+	// TODO (IMPROVEMENT): total area is calculated within randomIndexWithProbability for each gaussian (can be calculated once)
 	const index = randomIndexWithProbability(areas)
 	const face = model.faces[index]!
 	const triangle = [
@@ -75,60 +72,61 @@ function generateGaussianSplats(model: Model, numSplats: number): GaussianSplat[
 	vec3.add(position, position, vec3.scale(vec3.create(), triangle[1]!, u))
 	vec3.add(position, position, vec3.scale(vec3.create(), triangle[2]!, v))
 	let normal = model.normals[index]!
-	// let up = vec3.dot(normal, [0, 1, 0]) > 0 ? [0, 1, 0] : [0, -1, 0]
-	let up = [0, 1, 0]
-	splats.push({
+	gaussians.push({
 	    position: position,
-	    rotation: mat3.fromMat4(mat3.create(), mat4.lookAt(mat4.create(), position, normal, up)),
-	    scale: [0.01, 0.01, 0.01],
+	    rotation: mat3.fromMat4(mat3.create(),
+				    mat4.lookAt(mat4.create(), position, normal, [0, 1, 0])),
+	    scale: [0.001, 0.001, 0.001],
 	    color: [0.9, 0.9, 0.9],
-	    opacity: 0.01
+	    opacity: 0.1
 	})	
     }
-    return splats
+    return gaussians
 }
 
 type RenderContext = {
     canvas: HTMLCanvasElement,
     context: GPUCanvasContext,
     device: GPUDevice,
-    splatsBuffer: GPUBuffer,
+    gaussiansBuffer: GPUBuffer,
     pipeline: GPURenderPipeline,
     bindGroup: GPUBindGroup,
-    numOfSplats: number,
-    mvpArray: Float32Array,
-    mvpBuffer: GPUBuffer,
+    numOfGaussians: number,
+    cameraViewArray: Float32Array,
+    cameraViewBuffer: GPUBuffer,
+    aspectRatioArray: Float32Array,
+    aspectRatioBuffer: GPUBuffer,
     dt: number,
     et: number,
 }
 
-function uploadSplatsToGPU(device: GPUDevice, splats: GaussianSplat[]): GPUBuffer {
+function uploadGaussiansToGPU(device: GPUDevice, gaussians: Gaussian[]): GPUBuffer {
     const array: number[] = []
-    splats.forEach(splat => {
-	array.push(splat.position[0])
-	array.push(splat.position[1])
-	array.push(splat.position[2])
+    gaussians.forEach(g => {
+	array.push(g.position[0])
+	array.push(g.position[1])
+	array.push(g.position[2])
 	array.push(0.0)	// Padding
-	array.push(splat.rotation[0 * 3 + 0]!)
-	array.push(splat.rotation[0 * 3 + 1]!)
-	array.push(splat.rotation[0 * 3 + 2]!)
+	array.push(g.rotation[0 * 3 + 0]!)
+	array.push(g.rotation[0 * 3 + 1]!)
+	array.push(g.rotation[0 * 3 + 2]!)
 	array.push(0.0)
-	array.push(splat.rotation[1 * 3 + 0]!)
-	array.push(splat.rotation[1 * 3 + 1]!)
-	array.push(splat.rotation[1 * 3 + 2]!)
+	array.push(g.rotation[1 * 3 + 0]!)
+	array.push(g.rotation[1 * 3 + 1]!)
+	array.push(g.rotation[1 * 3 + 2]!)
 	array.push(0.0)
-	array.push(splat.rotation[2 * 3 + 0]!)
-	array.push(splat.rotation[2 * 3 + 1]!)
-	array.push(splat.rotation[2 * 3 + 2]!)
+	array.push(g.rotation[2 * 3 + 0]!)
+	array.push(g.rotation[2 * 3 + 1]!)
+	array.push(g.rotation[2 * 3 + 2]!)
 	array.push(0.0)
-	array.push(splat.scale[0])
-	array.push(splat.scale[1])
-	array.push(splat.scale[2])
+	array.push(g.scale[0])
+	array.push(g.scale[1])
+	array.push(g.scale[2])
 	array.push(0.0)
-	array.push(splat.color[0])
-	array.push(splat.color[1])
-	array.push(splat.color[2])
-	array.push(splat.opacity)
+	array.push(g.color[0])
+	array.push(g.color[1])
+	array.push(g.color[2])
+	array.push(g.opacity)
     })
     const cpuBufferView = new Float32Array(array)
     const buffer = device.createBuffer({
@@ -143,16 +141,15 @@ function onFrame(ctx: RenderContext) {
     ctx.canvas.width = ctx.canvas.clientWidth
     ctx.canvas.height = ctx.canvas.clientHeight
 
-    let aspectRatio = ctx.canvas.clientWidth/ctx.canvas.clientHeight
-    let view = mat4.create()
+    ctx.aspectRatioArray[0] = ctx.canvas.clientWidth/ctx.canvas.clientHeight
+    ctx.device.queue.writeBuffer(ctx.aspectRatioBuffer, 0, ctx.aspectRatioArray.buffer)
     let eyeAngle = ctx.et * 0.001;
-    mat4.lookAt(view, [0.3 * Math.sin(eyeAngle), 0.15, 0.3 * Math.cos(eyeAngle)], [0, 0.1, 0], [0, 1, 0])
-    let proj = mat4.create()
-    mat4.perspectiveZO(proj, Math.PI/3.0, aspectRatio, 0.01, 100.0)
-    let mvp = mat4.create()
-    mat4.multiply(mvp, proj, view)
-    ctx.mvpArray.set(mvp)
-    ctx.device.queue.writeBuffer(ctx.mvpBuffer, 0, ctx.mvpArray.buffer)    
+    let view = mat4.lookAt(mat4.create(),
+			   [0.3 * Math.sin(eyeAngle), 0.15, 0.3 * Math.cos(eyeAngle)],
+			   [0, 0.1, 0],
+			   [0, 1, 0])
+    ctx.cameraViewArray.set(view)
+    ctx.device.queue.writeBuffer(ctx.cameraViewBuffer, 0, ctx.cameraViewArray.buffer)    
     
     let cmd = ctx.device.createCommandEncoder()
     let pass = cmd.beginRenderPass({
@@ -165,7 +162,7 @@ function onFrame(ctx: RenderContext) {
     })
     pass.setPipeline(ctx.pipeline)
     pass.setBindGroup(0, ctx.bindGroup)
-    pass.draw(4, ctx.numOfSplats)
+    pass.draw(4, ctx.numOfGaussians)
     pass.end()
     ctx.device.queue.submit([cmd.finish()])
     requestAnimationFrame((et: number) => onFrame({...ctx, et: et, dt: et - ctx.et}))
@@ -187,14 +184,10 @@ async function onLoad() {
     })
 
     const model = await getBunnyModel()
-    const splats = generateGaussianSplats(model, 100000)
-    // const splats = generateGaussianSplats(model, 100)
+    const gaussians = generateGaussians(model, 100000)
+    // const gaussians = generateGaussians(model, 1)
     
-    // tmp
-    window.model = model
-    window.splats = splats
-
-    const splatsBuffer = uploadSplatsToGPU(device, splats)
+    const gaussiansBuffer = uploadGaussiansToGPU(device, gaussians)
     const shaderModule = device.createShaderModule({
 	code: await fetch("shader.wgsl").then(r => r.text()),
     })
@@ -224,9 +217,15 @@ async function onLoad() {
 	}
     })
 
-    let mvpArray = new Float32Array(16)
-    let mvpBuffer = device.createBuffer({
-	size: mvpArray.byteLength,
+    let cameraViewArray = new Float32Array(16)
+    let cameraViewBuffer = device.createBuffer({
+	size: cameraViewArray.byteLength,
+	usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+    })
+
+    let aspectRatioArray = new Float32Array(1)
+    let aspectRatioBuffer = device.createBuffer({
+	size: aspectRatioArray.byteLength,
 	usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
     })
 
@@ -234,10 +233,13 @@ async function onLoad() {
 	layout: pipeline.getBindGroupLayout(0),
 	entries: [{
 	    binding: 0,
-	    resource: splatsBuffer,
+	    resource: gaussiansBuffer,
 	}, {
 	    binding: 1,
-	    resource: mvpBuffer,
+	    resource: cameraViewBuffer,
+	}, {
+	    binding: 2,
+	    resource: aspectRatioBuffer,
 	}]
     })
 
@@ -245,12 +247,14 @@ async function onLoad() {
 	canvas: canvas,
 	context: ctx,
 	device: device,
-	splatsBuffer: splatsBuffer,
+	gaussiansBuffer: gaussiansBuffer,
 	pipeline: pipeline,
 	bindGroup: bindGroup,
-	numOfSplats: splats.length,
-	mvpArray: mvpArray,
-	mvpBuffer: mvpBuffer,
+	numOfGaussians: gaussians.length,
+	cameraViewArray: cameraViewArray,
+	cameraViewBuffer: cameraViewBuffer,
+	aspectRatioArray: aspectRatioArray,
+	aspectRatioBuffer: aspectRatioBuffer,
 	et: et,
 	dt: et
     }))
